@@ -94,8 +94,8 @@ void writeListToStream(
     std::ostream& os,
     List&& list,
     WriteElement write_element,
-    char const* prefix = "",
     char const* separator = " ",
+    char const* prefix = "",
     char const* suffix = "") {
   bool first = true;
   for (auto& element : list) {
@@ -113,8 +113,8 @@ template<typename List>
 void writeListToStream(
     std::ostream& os,
     List&& list,
-    char const* prefix = "",
     char const* separator = " ",
+    char const* prefix = "",
     char const* suffix = "") {
   return writeListToStream(
       os,
@@ -122,8 +122,8 @@ void writeListToStream(
       [&os](typename List::value_type const& element) {
         os << element;
       },
-      prefix,
       separator,
+      prefix,
       suffix);
 }
 
@@ -131,31 +131,31 @@ template<typename List, typename WriteElement>
 auto printList(
     List&& list,
     WriteElement&& write_element,
-    char const* prefix = "",
     char const* separator = " ",
+    char const* prefix = "",
     char const* suffix = "") {
   return FunctionPrinter{
-      [&list, &write_element, prefix, separator, suffix](std::ostream& os) {
+      [&list, &write_element, separator, prefix, suffix](std::ostream& os) {
         writeListToStream(
             os,
             std::forward<List>(list),
             write_element,
-            prefix, separator, suffix);
+            separator, prefix, suffix);
       }};
 }
 
 template<typename List>
 auto printList(
     List&& list,
-    char const* prefix = "",
     char const* separator = " ",
+    char const* prefix = "",
     char const* suffix = "") {
   return FunctionPrinter{
-      [&list, prefix, separator, suffix](std::ostream& os) {
+      [&list, separator, prefix, suffix](std::ostream& os) {
         writeListToStream(
             os,
             std::forward<List>(list),
-            prefix, separator, suffix);
+            separator, prefix, suffix);
       }};
 }
 

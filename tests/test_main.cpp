@@ -53,8 +53,8 @@ public:
         os,
         funnel.layers_,
         writeLayerToStream<typename FunnelBaseType::layer_type>,
+        "",
         indent,
-        "\n",
         "\n");
   }
 
@@ -79,6 +79,7 @@ public:
       if (!first) {
         os << layer_separator;
       }
+      first = false;
       for (auto& cell : layer.deque) {
         os << layer_prefix;
         if (cell.state.index() == 0) {
@@ -94,39 +95,42 @@ public:
   void test_funnel_set() {
     FunnelSet<int> funnel;
 
-    funnel.forceInsert(100);
-    cout << printLayers(funnel);
-    funnel.forceInsert(50);
-    cout << printLayers(funnel);
-    funnel.forceInsert(20);
-    cout << printLayers(funnel);
-    funnel.forceInsert(80);
-    cout << printLayers(funnel);
-    funnel.forceInsert(30);
-    cout << printLayers(funnel);
-    funnel.forceInsert(70);
-    cout << printLayers(funnel);
-    funnel.forceInsert(10);
-    cout << printLayers(funnel);
+    funnel.forceInsert(100, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(50, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(20, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(80, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(30, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(70, false);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(10, false);
+    cout << printLayers(funnel) << endl;
+
+    cout << "----- Optimize" << endl;
+    funnel.optimize();
+    cout << printLayers(funnel) << endl;
 
     cout << "----- Binary search" << endl;
     funnel.clear();
 
-    funnel.forceInsertBinarySearch(100);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(50);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(20);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(80);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(30);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(70);
-    cout << printLayers(funnel);
-    funnel.forceInsertBinarySearch(10);
-    cout << printLayers(funnel);
-
+    funnel.forceInsert(100);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(50);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(20);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(80);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(30);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(70);
+    cout << printLayers(funnel) << endl;
+    funnel.forceInsert(10);
+    cout << printLayers(funnel) << endl;
   }
 
   void run() {

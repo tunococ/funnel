@@ -33,18 +33,18 @@ namespace funnel {
  *
  *  A cell is *live* if its entry has not been deleted; it is *dead* otherwise.
  */
-template<typename Entry, typename SizeType = std::size_t>
+template<class Entry, class SizeType = std::size_t>
 struct FunnelCell {
+  /// This type.
+  using this_type = FunnelCell<Entry, SizeType>;
   /// `Entry`.
   using entry_type = Entry;
   /// `SizeType`.
   using size_type = SizeType;
   /// `std::make_signed_t<size_type>`.
   using offset_type = std::make_signed_t<size_type>;
-  /// `FunnelCell<entry_type, size_type>`.
-  using this_type = FunnelCell<entry_type, size_type>;
 
-  template<typename... Args>
+  template<class... Args>
   FunnelCell(Args&&... args): entry(std::forward<Args>(args)...) {}
 
   FunnelCell(this_type const&) = default;
@@ -72,6 +72,8 @@ struct FunnelCell {
     Root() = default;
     Root(Root const&) = default;
     Root(Root&&) = default;
+    Root& operator=(Root const&) = default;
+    Root& operator=(Root&&) = default;
   };
 
   /// Value that contains a comparable key.
@@ -104,6 +106,14 @@ struct FunnelCell {
    *  operation with path compression.
    */
   mutable std::variant<std::monostate, Root, offset_type> state{};
+
+  constexpr bool isLive() const {
+    return state.index() == 0;
+  }
+
+  constexpr bool isDead() const {
+    return state.index() != 0;
+  }
 };
 
 /**
@@ -114,17 +124,65 @@ struct FunnelCell {
  *  sorted by their entries. The list of cells is called `deque`.
  *  The type `Deque` can be any list data structure that supports efficient
  *  random access with an index and insertion at both ends.
+ *
+ *  The leftmost cell and the rightmost cell in `deque`, if exist, are always
+ *  live. That means the deletion of the leftmost cell is not lazy, and it will
+ *  trigger removals of all consecutive dead cells from `deque` until `deque`
+ *  is left with a live leftmost cell, or until `deque` is empty.
+ *  The same is true for the deletion of the rightmost cell.
+ *
+ *  `FunnelLayer` keeps track of the number of live cells.
+ *
+ *  @tparam Entry
+ *    Main storage type of *entries* in the funnel.
+ *  @tparam Allocator
+ *    Allocator type for `Entry`.
+ *    This allocator type should support rebinding for type
+ *    `Cell<entry_type, size_type>`, i.e.,
+ *    `allocator_traits<Allocator>::rebind_alloc<Cell<entry_type, size_type>>`
+ *    should be a compatible allocator type.
+ *  @tparam Deque
+ *    Functor of kind `* -> * -> *`.
+ *    `Deque<T, A>` should be similar to `std::deque<T, A>`.
+ *  @tparam Cell
+ *    Functor of kind `* -> * -> *`.
+ *    `Cell<T, U>` should be similar to `FunnelCell<T, U>`.
  */
-template<typename Deque>
+template<
+    class Entry,
+    class Allocator = std::allocator<Entry>,
+    template<class, class> class Deque = std::deque,
+    template<class, class> class Cell = FunnelCell>
 struct FunnelLayer {
-  /// `Deque`.
-  using deque_type = Deque;
-  /// `deque_type::value_type`.
-  using value_type = typename deque_type::value_type;
-  /// `deque_type::allocator_type`.
-  using allocator_type = typename deque_type::allocator_type;
-  /// `deque_type::size_type`.
-  using size_type = typename deque_type::size_type;
+  /// This type.
+  using this_type = FunnelLayer<Entry, Allocator, Deque, Cell>;
+  /// `Entry`.
+  using entry_type = Entry;
+  /// `Allocator`.
+  using entry_allocator_type = Allocator;
+  /// `entry_allocator_type::size_type`.
+  using size_type = typename entry_allocator_type::size_type;
+  /// `Cell<entry_type, size_type>`.
+  using cell_type = Cell<entry_type, size_type>;
+  /// `allocator_traits<entry_allocator_type>::rebind_alloc<cell_type>`.
+  using allocator_type =
+      typename std::allocator_traits<entry_allocator_type>::
+      template rebind_alloc<cell_type>;
+  /// `Deque<cell_type, allocator_type>`.
+  using deque_type = Deque<cell_type, allocator_type>;
+
+  static_assert(std::is_same_v<
+      cell_type,
+      typename deque_type::value_type>);
+  static_assert(std::is_same_v<
+      size_type,
+      typename cell_type::size_type>);
+  static_assert(std::is_same_v<
+      size_type,
+      typename deque_type::size_type>);
+
+  /// `cell_type`.
+  using value_type = cell_type; 
   /// `deque_type::difference_type`.
   using difference_type = typename deque_type::difference_type;
   /// `deque_type::reference`.
@@ -144,33 +202,16 @@ struct FunnelLayer {
   /// `deque_type::const_reverse_iterator`.
   using const_reverse_iterator = typename deque_type::const_reverse_iterator;
 
-  /// `value_type`.
-  using cell_type = value_type;
-  /// `cell_type::entry_type`.
-  using entry_type = typename cell_type::entry_type;
   /// `entry_type&`.
   using entry_reference = entry_type&;
   /// `entry_type const&`.
   using entry_const_reference = entry_type const&;
-  /**
-   *  @brief
-   *  `std::allocator_traits<allocator_type>::rebind_alloc<entry_type>.
-   *
-   *  This is used in defining pointer types for `entry_type`.
-   *  There is no concrete instance of `entry_allocator_type`.
-   */
-  using entry_allocator_type =
-      typename std::allocator_traits<allocator_type>::
-      template rebind_alloc<entry_type>;
-  /// `entry_allocator_type::pointer`.
+  /// `allocator_traits<entry_allocator_type>::pointer`.
   using entry_pointer =
       typename std::allocator_traits<entry_allocator_type>::pointer;
-  /// `entry_allocator_type::const_pointer`.
+  /// `allocator_traits<entry_allocator_type>::const_pointer`.
   using entry_const_pointer =
       typename std::allocator_traits<entry_allocator_type>::const_pointer;
-
-  /// `FunnelLayer<deque_type>`.
-  using this_type = FunnelLayer<deque_type>;
 
   // Static assertions
   static_assert(std::is_same<size_type, typename cell_type::size_type>::value);
@@ -183,19 +224,6 @@ struct FunnelLayer {
   this_type& operator=(this_type const&) = default;
   this_type& operator=(this_type&&) = default;
 
-  // Member variables
-
-  /// Sorted list of cells.
-  deque_type deque;
-
-  /**
-   *  @brief
-   *  The number of dead cells in this layer.
-   *
-   *  This number is used to decide when to merge layers.
-   */
-  size_type num_dead{0};
-
   /**
    *  @brief
    *  Returns `index` if it points to a live cell in `deque`, or returns the
@@ -206,7 +234,7 @@ struct FunnelLayer {
   static constexpr size_type rightLiveIndex(
       deque_type const& deque,
       size_type index) {
-    return deque[index].state.index() == 0
+    return deque[index].isLive()
         ? index
         : index + std::get<1>(deque[findRootIndex(deque, index)].state).right;
   }
@@ -230,7 +258,7 @@ struct FunnelLayer {
   static constexpr size_type leftLiveIndex(
       deque_type const& deque,
       size_type index) {
-    return deque[index].state.index() == 0
+    return deque[index].isLive()
         ? index
         : index - std::get<1>(deque[findRootIndex(deque, index)].state).left;
   }
@@ -244,18 +272,76 @@ struct FunnelLayer {
     return leftLiveIndex(deque, index);
   }
 
-  template<typename... Args>
-  void emplace_front(Args&&... args) {
-    deque.emplace_front(std::forward<Args>(args)...);
+  /**
+   *  @brief
+   *  Returns the index of the live cell that is closest to the right of the
+   *  given `index`. If `index` points to the last cell, `index + 1` will be
+   *  returned.
+   *
+   *  This function is used for enumerating all live cells.
+   */
+  static constexpr size_type nextLiveIndex(
+      deque_type const& deque,
+      size_type index) {
+    size_t j{index + 1};
+    if (j == deque.size() || deque[j].isLive()) {
+      return j;
+    }
+    return j + std::get<1>(deque[findRootIndex(deque, j)].state).right;
   }
 
-  template<typename... Args>
+  /**
+   *  @brief
+   *  Calls `nextLiveIndex(deque, index)` where `deque` is the member variable
+   *  of `FunnelLayer`.
+   */
+  constexpr size_type nextLiveIndex(size_type index) const {
+    return nextLiveIndex(deque, index);
+  }
+
+  template<class... Args>
+  void emplace_front(Args&&... args) {
+    deque.emplace_front(std::forward<Args>(args)...);
+    ++num_live;
+  }
+
+  template<class... Args>
   void emplace_back(Args&&... args) {
     deque.emplace_back(std::forward<Args>(args)...);
+    ++num_live;
+  }
+
+  template<class CellType>
+  void push_back(CellType&& cell) {
+    deque.push_back(std::forward<CellType>(cell));
+    ++num_live;
+  }
+
+  /// Removes dead cells.
+  void optimize() {
+    // If there are no dead cells, do nothing.
+    if (deque.size() == 0 || num_live == deque.size()) {
+      return;
+    }
+    size_type i{1};
+    // `i` must be smaller than `num_live` because there is a dead cell.
+    for (; deque[i].isLive(); ++i) {}
+    size_type j{i};
+    while (i < num_live) {
+      j = rightLiveIndex(j);
+      deque[i] = std::move(deque[j]);
+      ++i;
+      ++j;
+    }
+    deque.resize(num_live);
   }
 
   constexpr size_type size() const {
     return deque.size();
+  }
+
+  constexpr size_type live() const {
+    return num_live;
   }
 
   /**
@@ -272,6 +358,7 @@ struct FunnelLayer {
    *  right end of `deque`--those dead cells will be removed from `deque`.
    */
   void deleteEntry(size_type index) {
+    --num_live;
     auto& state = deque[index].state;
     assert(state.index() == 0);
 
@@ -283,7 +370,6 @@ struct FunnelLayer {
       // the left end of `deque`.
       size_type j = 0;
       for (; j < deque.size() && deque[j].index != 0; ++j) {}
-      num_dead -= j;
       deque.erase(deque.begin(), std::next(deque.begin(), j));
       return;
     }
@@ -293,7 +379,6 @@ struct FunnelLayer {
       size_type j = 0;
       size_type const last_index = deque.size() - 1;
       for (; j < deque.size() && deque[last_index - j].index != 0; ++j) {}
-      num_dead -= j;
       deque.erase(std::next(deque.begin(), deque.size() - j), deque.end());
       return;
     }
@@ -372,6 +457,24 @@ struct FunnelLayer {
         static_cast<offset_type>(right_root_index));
   }
 
+  constexpr void swap(this_type& other) {
+    deque.swap(other.deque);
+    std::swap(num_live, other.num_live);
+  }
+
+  // Member variables
+
+  /// Sorted list of cells.
+  deque_type deque;
+
+  /**
+   *  @brief
+   *  The number of live cells in this layer.
+   *
+   *  This number is used to decide when to merge layers.
+   */
+  size_type num_live{0};
+
  protected:
 
   /**
@@ -406,45 +509,224 @@ struct FunnelLayer {
 
 /**
  *  @brief
- *  Base class for `FunnelSet` and `FunnelMap`.
+ *  Merge policy based on a rational ratio `SMALLER / LARGER`.
  *
- *  A funnel stores layers in a data structure of type `LayerList`.
- *  Elements of `LayerList` should have type `FunnelLayer`.
- *  (`std::list<FunnelLayer<std::deque<FunnelCell<Entry>>>>` is a typical
- *  choice, where `Entry` is the intended type of entries in the funnel.)
+ *  A *merge policy* consists of two callback functions: `mergeOnInsert()` and
+ *  `mergeOnErase()`. These functions will be called by the funnel after an
+ *  insert or an erase operation finishes. The layer iterator that points to
+ *  the layer whose element was inserted to erased will be supplied in the
+ *  callback.
  *
- *  The member typedef `value_type` of `FunnelBase`, defined as
- *  `LayerList::value_type::value_type`, is the type of entries in the funnel.
+ *  The merge criterion after insertion is meant to guarantee that two adjacent
+ *  layers have sizes that are different enough. This is necessary for bounding
+ *  the number of layers based on the number of all cells (dead and alive) in
+ *  the funnel.
  *
- *  `ExtractKey` is a unary operator that turns `value_type const&` to
- *  `Key const&`.
- *  `Compare` is a binary operator that compares two `Key const&` objects.
- *  (It returns `true` if the first operand is strictly less than the second
- *  operand.)
- *  `ExtractKey` and `Compare` together define how entries are ordered.
+ *  The merge criterion after deletion is meant to guarantee that not too many
+ *  dead cells remain in the funnel. This is necessary for bounding the number
+ *  of all cells in the funnel based on the number of live cells.
  *
- *  Because entries of a funnel are lazily deleted, their actual destructions
- *  may happen at undetermined time, i.e., their destructors might not be
- *  called right when they are marked *deleted*. A custom `DeleteEntry`
- *  callback function, which will be called whenever an entry is marked 
- *  *deleted*, can be provided in the constructor of `FunnelBase`.
- *  `DeleteEntry` must support being called with one argument of type
- *  `value_type&`. The operation of `DeleteEntry` may modify the entry, but
- *  such modification must not change the return value of subsequent calls to
- *  `ExtractKey`.
+ *  The *never-merge* policy can be created by choosing `LARGER = 0`.
+ *
+ *  When `SMALLER` and `LARGER` are positive, we get the following guarantees:
+ *  - The number of live cells is bounded below by
+ *    `c * SMALLER / (SMALLER + LARGER)`; and
+ *  - The number of layers is bounded above by
+ *    `log(c) / log(LARGER / SMALLER)`;
+ *  where `c` is the number of all cells (dead and live) in the funnel.
+ *  Consequently, if we let `n` denote the number of live cells in the funnel
+ *  (which is the *size* of the funnel), then the number of layers is bounded
+ *  above by `log(n * (SMALLER + LARGER) / SMALLER) / log(LARGER / SMALLER)`.
+ */
+template<std::size_t SMALLER, std::size_t LARGER, class FunnelType>
+struct SimpleRatioMerger {
+  using this_type = SimpleRatioMerger<SMALLER, LARGER, FunnelType>;
+  using funnel_type = FunnelType;
+  using size_type = typename FunnelType::size_type;
+  using layer_type = typename FunnelType::layer_type;
+  using layer_list_type = typename FunnelType::layer_list_type;
+  using layer_iterator = typename FunnelType::layer_iterator;
+  using const_layer_iterator = typename FunnelType::const_layer_iterator;
+
+  static constexpr size_type smaller{static_cast<size_type>(SMALLER)};
+  static constexpr size_type larger{static_cast<size_type>(LARGER)};
+
+  /**
+   *  @brief
+   *  Merges `layer` with its previous layer if the *merge criterion* based on
+   *  the ratio `smaller / larger` is met, sets `layer` to the previous layer,
+   *  and repeats this process until the merge criterion is not met or until
+   *  `layer` reaches `funnel.layers_.begin()`. At the end, `layer` is
+   *  returned.
+   *
+   *  The *merge criterion* is:
+   *  - `larger` is not `0`, and the ratio `layer->live() / prev_size` exceeds
+   *    `smaller / larger`, where `prev_size` is the size (counting both dead
+   *    and live cells) of the previous layer.
+   *
+   *  The returned `layer` will contain all the elements in the original input
+   *  `layer`. This can be used to identify the layer that contains the newly
+   *  inserted element after merging.
+   *
+   *  This merge function guarantees that the number of layers will be
+   *  `O(log n)` where `n` is the number of cells. More specifically, the
+   *  number of layers is bounded above by `log(n) / log(larger / smaller)`.
+   */
+  layer_iterator mergeOnInsert(FunnelType& funnel, layer_iterator layer) {
+    while (layer != funnel.layers_.begin()) {
+      layer_iterator prev_layer = std::prev(layer);
+      if (larger * layer->live() <= smaller * prev_layer->size()) {
+        break;
+      }
+      funnel.mergeLayers(prev_layer, layer);
+      layer = prev_layer;
+    }
+    return layer;
+  }
+
+  /**
+   *  @brief
+   *  Merges `layer` with its next layer if the *merge criterion* based on the
+   *  ratio `smaller / larger` is met, then calls `mergeOnInsert()`.
+   *
+   *  The *merge criterion* is:
+   *  - `larger` is not `0`, and the ratio
+   *    `layer->live() / layer->size()` is smaller than or equal to
+   *    `smaller / (smaller + larger)`.
+   *
+   *  The return value will be `layer` if no merging occurs; otherwise, it will
+   *  be the return value of the call to `mergeOnInsert()`.
+   *
+   *  This merge function guarantees that the total number of live cells will
+   *  be `O(n)` where `n` is the number of cells. More specifically, the ratio
+   *  of dead cells over all cells in each layer is bounded above by
+   *  `larger / (smaller + larger)`.
+   */
+  layer_iterator mergeOnErase(FunnelType& funnel, layer_iterator layer) {
+    if ((smaller + larger) * layer->live() > smaller * layer->size()) {
+      return layer;
+    }
+    funnel.mergeLayers(layer, std::next(layer));
+    return mergeOnInsert(funnel, layer);
+  }
+};
+
+/**
+ *  @brief
+ *  Helper class for currying the first two parameters of `SimpleRatioMerger`.
+ */
+template<std::size_t SMALLER, std::size_t LARGER>
+struct SimpleRatioMergerCurried {
+  template<class FunnelType>
+  using type = SimpleRatioMerger<SMALLER, LARGER, FunnelType>;
+};
+
+/**
+ *  @brief
+ *  Base class for `FunnelSet`, `FunnelMap`, `FunnelMultiset`, and
+ *  `FunnelMultimap`.
+ *
+ *  A funnel consists of a list of *layers*, each of which is a sorted deque of
+ *  *cells*. A cell consists of an *entry* and a *state*. Cells are ordered by
+ *  entries that they contain.
+ *
+ *  To cover both *set* and *map* data structures, `FunnelBase` takes `Entry`
+ *  and `Key` as potentially different types.
+ *
+ *  - For `FunnelSet` and `FunnelMultiset`, `Key` and `Entry` will be the same,
+ *    and `ExtractKey` is the type of an identity function.
+ *  - For `FunnelMap` and `FunnelMultimap`, `Entry` will be a pair of `Key` and
+ *    `Value`, and `ExtractKey` will take `Entry` and return its `Key`.
+ *
+ *  @tparam Entry
+ *    Main storage type of *entries* in the funnel.
+ *  @tparam DeleteEntry
+ *    Since a funnel uses lazy deletion, a deleted entry may still hold its place
+ *    in a funnel--the containing cell may simply be marked *dead*. This means
+ *    the destructor of the entry might not be called right after it is deleted.
+ *    To allow the user to perform an immediate optimize when an entry is marked
+ *    deleted, the user can supply a *deletion callback* during the construction
+ *    of a funnel. This callback must behave like a function with prototype
+ *    `void(Entry*)`. `DeleteEntry` is the type of the callback.
+ *  @tparam Key
+ *    Type of *keys* in the funnel.
+ *    For `FunnelSet` and `FunnelMultiset`, `Key` will be the same as `Entry`.
+ *    For `FunnelMap` and `FunnelMultimap`, `Entry` will be
+ *    `std::pair<Key, Value>`, where `Value` is the *value* type.
+ *  @tparam ExtractKey
+ *    For `FunnelSet` and `FunnelMultiset`, `ExtractKey` will be the type of
+ *    an identity function.
+ *    For `FunnelMap` and `FunnelMultimap`, `ExtractKey` will be the type of
+ *    a function that projects `std::pair<Key, Value>` onto its `first`
+ *    element.
+ *  @tparam Compare
+ *    Type of the comparison operator.
+ *    This should be compatible with a function with prototype
+ *    `bool(Key const&, key const&)`.
+ *  @tparam Allocator
+ *    Allocator type for `Entry`.
+ *    This allocator type should support rebinding for the following types:
+ *    `layer_type`, `cell_type` and `HorizontalIterator`.
+ *  @tparam Deque
+ *    Functor of kind `* -> * -> *`.
+ *    `Deque` will be supplied as the third argument of `Layer`.
+ *  @tparam LayerList
+ *    Functor of kind `* -> * -> *`.
+ *    `FunnelBase` will instantiate
+ *    `LayerList<layer_type, layer_allocator_type>` and expect it to behave
+ *    like `std::vector<layer_type, layer_allocator_type>`.
+ *  @tparam Cell
+ *    Functor of kind `* -> * -> *`.
+ *    `Cell` will be supplied as the fourth argument of `Layer`.
+ *  @tparam Layer
+ *    Functor of kind `* -> * -> (* -> * -> *) -> (* -> * -> *) -> *`.
+ *    `FunnelBase` will instantiate
+ *    `Layer<Entry, Allocator, Deque, Cell>` and expect it to behave like
+ *    `FunnelLayer<Entry, Allocator, Deque, Cell>`.
+ *  @tparam Merger
+ *    Functor of kind `* -> *`.
+ *    `FunnelBase` will instantiate `Merger<this_type>` and expect it to
+ *    contain the following two callback functions:
+ *    \code{.cpp}
+ *        layer_iterator mergeOnInsert(this_type&, layer_iterator);
+ *        layer_iterator mergeOnErase(this_type&, layer_iterator);
+ *    \endcode
+ *    As a simple example, `Merger<this_type>` should behave like
+ *    `SimpleRatioMerger<1, 2, this_type>`.
  */
 template<
-    typename LayerList,
-    typename DeleteEntry,
-    typename Key,
-    typename ExtractKey,
-    typename Compare = std::less<Key>>
+    class Entry,
+    class DeleteEntry,
+    class Key,
+    class ExtractKey,
+    class Compare = std::less<Key>,
+    class Allocator = std::allocator<Entry>,
+    template<class, class> class Deque = std::deque,
+    template<class, class> class LayerList = std::vector,
+    template<class> class Merger = SimpleRatioMergerCurried<1, 2>::type,
+    template<class, class> class Cell = FunnelCell,
+    template<
+      class,
+      class,
+      template<class, class> class,
+      template<class, class> class> class Layer = FunnelLayer>
 class FunnelBase {
  public:
-  /// `LayerList`.
-  using layer_list_type = LayerList;
-  /// `layer_list_type::value_type`.
-  using layer_type = typename layer_list_type::value_type;
+  /// This class.
+  using this_type = FunnelBase<
+      Entry,
+      DeleteEntry,
+      Key,
+      ExtractKey,
+      Compare,
+      Allocator,
+      Deque,
+      LayerList,
+      Merger,
+      Cell,
+      Layer>;
+  /// `Entry`.
+  using entry_type = Entry;
   /// `DeleteEntry`.
   using delete_entry = DeleteEntry;
   /// `Key`.
@@ -453,28 +735,47 @@ class FunnelBase {
   using extract_key = ExtractKey;
   /// `Compare`.
   using key_compare = Compare;
-  /// `layer_list_type::allocator_type`.
-  using layer_allocator_type = typename layer_list_type::allocator_type;
+  /// `Allocator`.
+  using allocator_type = Allocator;
+  /// `allocator_type::size_type`.
+  using size_type = typename allocator_type::size_type;
+  /// `Layer<Entry, Allocator, Deque, Cell>`.
+  using layer_type = Layer<Entry, Allocator, Deque, Cell>;
+
+  static_assert(std::is_same_v<
+      size_type,
+      typename layer_type::size_type>);
+  static_assert(std::is_same_v<
+      entry_type,
+      typename layer_type::entry_type>);
+
+  /// `allocator_traits<allocator_type>::rebind_alloc<layer_type>`.
+  using layer_allocator_type =
+      typename std::allocator_traits<allocator_type>::
+      template rebind_alloc<layer_type>;
+  /// `LayerList<layer_type, layer_allocator_type>`.
+  using layer_list_type = LayerList<layer_type, layer_allocator_type>;
+
+  static_assert(std::is_same_v<
+      size_type,
+      typename layer_list_type::size_type>);
+  static_assert(std::is_same_v<
+      layer_type,
+      typename layer_list_type::value_type>);
+
   /// `layer_type::cell_type`.
   using cell_type = typename layer_type::cell_type;
   /// `layer_type::deque_type`.
   using deque_type = typename layer_type::deque_type;
-  /// `layer_type::entry_type`.
-  using entry_type = typename layer_type::entry_type;
+  /// `Merger<this_type>`.
+  using merger_type = Merger<this_type>;
+
   /// `entry_type`.
   using value_type = entry_type;
-  /// `layer_type::size_type`.
-  using size_type = typename layer_type::size_type;
   /// `layer_type::difference_type`.
   using difference_type = typename layer_type::difference_type;
-  /// Rebound allocator from `layer_allocator_type` for `value_type`.
-  using allocator_type =
-      typename std::allocator_traits<layer_allocator_type>::
-      template rebind_alloc<value_type>;
-  using cell_allocator_type =
-      typename std::allocator_traits<layer_allocator_type>::
-      template rebind_alloc<cell_type>;
-
+  /// `layer_type::allocator_type`.
+  using cell_allocator_type = typename layer_type::allocator_type;
   /// `value_type&`.
   using reference = value_type&;
   /// `value_type const&`.
@@ -484,49 +785,43 @@ class FunnelBase {
   /// `layer_type::entry_const_pointer`.
   using const_pointer = typename layer_type::entry_const_pointer;
 
-  /// This class.
-  using this_type = FunnelBase<
-      layer_list_type, delete_entry,
-      key_type, extract_key,
-      key_compare>;
-
   /**
    *  @brief
    *  Operator for comparing the member `entry` in `cell_type` objects.
    */
   struct cell_compare {
-    key_compare key_cmp;
+    key_compare key_comp;
     extract_key ext_key;
     constexpr cell_compare(
-        extract_key const& ext_key, key_compare const& key_cmp)
-      : ext_key{ext_key}, key_cmp{key_cmp} {}
+        extract_key const& ext_key, key_compare const& key_comp)
+      : ext_key{ext_key}, key_comp{key_comp} {}
     cell_compare(cell_compare const&) = default;
     cell_compare(cell_compare&&) = default;
-    template<typename K1, typename K2>
+    template<class K1, class K2>
     constexpr bool operator()(
         K1 const& a,
         K2 const& b) const {
-      return key_cmp(a, b);
+      return key_comp(a, b);
     }
-    template<typename K1, typename S1, typename K2>
+    template<class K1, class S1, class K2>
     constexpr bool operator()(
         FunnelCell<K1, S1> const& a,
         K2 const& b) const {
-      return key_cmp(ext_key(a.entry), b);
+      return key_comp(ext_key(a.entry), b);
     }
-    template<typename K1, typename K2, typename S2>
+    template<class K1, class K2, class S2>
     constexpr bool operator()(
         K1 const& a,
         FunnelCell<K2, S2> const& b) const {
-      return key_cmp(a, ext_key(b.entry));
+      return key_comp(a, ext_key(b.entry));
     }
-    template<typename K1, typename S1, typename K2, typename S2>
+    template<class K1, class S1, class K2, class S2>
     constexpr bool operator()(
         FunnelCell<K1, S1> const& a,
         FunnelCell<K2, S2> const& b) const {
-      return key_cmp(ext_key(a.entry), ext_key(b.entry));
+      return key_comp(ext_key(a.entry), ext_key(b.entry));
     }
-    template<typename A, typename B>
+    template<class A, class B>
     constexpr int compare(A const& a, B const& b) const {
       return (*this)(a, b) ? -1 : ((*this)(b, a) ? 1 : 0);
     }
@@ -564,32 +859,76 @@ class FunnelBase {
   using layer_iterator = typename layer_list_type::iterator;
   using const_layer_iterator = typename layer_list_type::const_iterator;
 
-
   /**
    *  @brief
    *  Constructs an empty `FunnelBase` object.
    *
-   *  @param extract_key
-   *    Unary operator for extracting `key_type const&` from
+   *  @param del_ent
+   *    Unary operator that will be called when an entry is *erased* from the
+   *    funnel. `del_ent(v)` should be valid when `v` has type
    *    `value_type const&`.
-   *  @param cmp
+   *  @param ext_key
+   *    Unary operator for extracting `key_type const&` from
+   *    `value_type const&`. `ext_key(v)` should return `key_type const&` when
+   *    `v` has type `value_type const&`.
+   *  @param key_comp
    *    Binary operator for comparing two `key_type const&` values.
-   *    `cmp(a, b)` should return `true` if and only if its `a` is strictly
-   *    less than `b`.
-   *  @param allocator
-   *    Allocator for constructing `layer_type` objects.
+   *    `key_comp(a, b)` should return `true` if and only if its `a` is strictly
+   *    less than `b`, where `a` and `b` have type `key_type const&`.
+   *  @param alloc
+   *    Allocator for constructing objects of type `value_type`.
+   *    `alloc` must be rebindable to allocators for types `cell_type` and
+   *    `layer_type`.
+   *  @param merger
+   *    Merge callback object.
+   *    `merger.mergeOnInsert(*this, layer)` will be called after an element is
+   *    added to `layer` of the funnel, while
+   *    `merger.mergeOnErase(*this, layer)` will be called after an element is
+   *    removed from `layer` of the funnel.
+   *    Both functions should return a `layer_iterator` pointing to the layer
+   *    that eventually contains all the elements in the original input
+   *    `layer`.
+   *    `FunnelBase` will always supply a dereferenceable `layer` to these
+   *    functions. (`layer` cannot be the past-the-end iterator.)
    */
   constexpr FunnelBase(
       delete_entry const& del_ent = delete_entry(),
       extract_key const& ext_key = extract_key(),
-      key_compare const& key_cmp = key_compare(),
-      allocator_type const& alloc = allocator_type())
+      key_compare const& key_comp = key_compare(),
+      allocator_type const& alloc = allocator_type(),
+      merger_type const& merger = merger_type())
     : del_ent_{del_ent},
-      cell_cmp_{ext_key, key_cmp},
+      cell_comp_{ext_key, key_comp},
       value_alloc_{alloc},
       layer_alloc_{alloc},
       cell_alloc_{alloc},
-      layers_{layer_alloc_} {
+      layers_{layer_alloc_},
+      merger_{merger} {
+  }
+
+  /// Returns the `delete_entry` callback.
+  delete_entry del_ent() const noexcept {
+    return del_ent_;
+  }
+
+  /// Returns the `extract_key` callback.
+  extract_key ext_key() const noexcept {
+    return cell_comp_.ext_key_;
+  }
+
+  /// Returns the `key_compare` callback.
+  key_compare key_comp() const noexcept {
+    return cell_comp_.key_comp;
+  }
+
+  /// Returns the allocator.
+  allocator_type get_allocator() const noexcept {
+    return value_alloc_;
+  }
+
+  /// Returns the `merger_type` callback object.
+  merger_type get_merger() const noexcept {
+    return merger_;
   }
 
   /// Default copy constructor.
@@ -663,64 +1002,113 @@ class FunnelBase {
     return const_iterator::end_async(*this, policy);
   }
 
-  constexpr iterator lower_bound(key_type const& key) {
+  template<class K>
+  constexpr iterator lower_bound(K const& key) {
     return iterator::lower_bound(*this, key);
   }
 
-  constexpr const_iterator lower_bound(key_type const& key) const {
+  template<class K>
+  constexpr const_iterator lower_bound(K const& key) const {
     return const_iterator::lower_bound(*this, key);
   }
 
+  template<class K>
   constexpr iterator lower_bound_async(
       std::launch policy,
-      key_type const& key) {
+      K const& key) {
     return iterator::lower_bound_async(*this, policy, key);
   }
 
+  template<class K>
   constexpr const_iterator lower_bound_async(
       std::launch policy,
-      key_type const& key) const {
+      K const& key) const {
     return const_iterator::lower_bound_async(*this, policy, key);
   }
 
-  constexpr iterator upper_bound(key_type const& key) {
+  template<class K>
+  constexpr iterator upper_bound(K const& key) {
     return iterator::upper_bound(*this, key);
   }
 
-  constexpr const_iterator upper_bound(key_type const& key) const {
+  template<class K>
+  constexpr const_iterator upper_bound(K const& key) const {
     return const_iterator::upper_bound(*this, key);
   }
 
+  template<class K>
   constexpr iterator upper_bound_async(
       std::launch policy,
-      key_type const& key) {
+      K const& key) {
     return iterator::upper_bound_async(*this, policy, key);
   }
 
+  template<class K>
   constexpr const_iterator upper_bound_async(
       std::launch policy,
-      key_type const& key) const {
+      K const& key) const {
     return const_iterator::upper_bound_async(*this, policy, key);
   }
 
-  constexpr iterator find(key_type const& key) {
+  template<class K>
+  constexpr std::pair<iterator, iterator> equal_range(K const& key) {
+    return iterator::equal_range(*this, key);
+  }
+
+  template<class K>
+  constexpr std::pair<const_iterator, const_iterator> equal_range(
+      K const& key) const {
+    return const_iterator::equal_range(*this, key);
+  }
+
+  template<class K>
+  constexpr std::pair<iterator, iterator> equal_range_async(
+      std::launch policy,
+      K const& key) {
+    return iterator::equal_range_async(*this, policy, key);
+  }
+
+  template<class K>
+  constexpr std::pair<const_iterator, const_iterator> equal_range_async(
+      std::launch policy,
+      K const& key) const {
+    return const_iterator::equal_range_async(*this, policy, key);
+  }
+
+  template<class K>
+  constexpr iterator find(K const& key) {
     return iterator::find(*this, key);
   }
 
-  constexpr const_iterator find(key_type const& key) const {
+  template<class K>
+  constexpr const_iterator find(K const& key) const {
     return const_iterator::find(*this, key);
   }
 
+  template<class K>
   constexpr iterator find_async(
       std::launch policy,
-      key_type const& key) {
+      K const& key) {
     return iterator::find_async(*this, policy, key);
   }
 
+  template<class K>
   constexpr const_iterator find_async(
       std::launch policy,
-      key_type const& key) const {
+      K const& key) const {
     return const_iterator::find_async(*this, policy, key);
+  }
+
+  void optimize() {
+    if (layers_.empty()) {
+      return;
+    }
+    layer_iterator curr_layer = layers_.end();
+    while (curr_layer != layers_.begin()) {
+      layer_iterator prev_layer = std::prev(curr_layer);
+      mergeLayers(prev_layer, curr_layer);
+      curr_layer = prev_layer;
+    }
   }
 
  protected:
@@ -802,13 +1190,13 @@ class FunnelBase {
      *
      *  Note that the comparison order is reversed because we want to extract
      *  the minimum element with `std::priority_queue::top()` and
-     *  `std::priority_queue::pop()`, while `key_cmp` is a *less than*
+     *  `std::priority_queue::pop()`, while `key_comp` is a *less than*
      *  operator.
      */
     struct CompareHorizontalIterator {
-      cell_compare cell_cmp;
-      constexpr CompareHorizontalIterator(cell_compare const& cell_cmp)
-        : cell_cmp{cell_cmp} {}
+      cell_compare cell_comp;
+      constexpr CompareHorizontalIterator(cell_compare const& cell_comp)
+        : cell_comp{cell_comp} {}
       constexpr bool operator()(
           HorizontalIterator const& a,
           HorizontalIterator const& b) const {
@@ -818,7 +1206,7 @@ class FunnelBase {
         if (b.cell_index >= b.layer->deque.size()) {
           return false;
         }
-        return cell_cmp(
+        return cell_comp(
             b.layer->deque[b.cell_index],
             a.layer->deque[a.cell_index]);
       }
@@ -827,9 +1215,9 @@ class FunnelBase {
     Iterator(
         HorizontalIteratorList&& horz_it_list,
         size_type index,
-        cell_compare const& cell_cmp)
+        cell_compare const& cell_comp)
       : queue_{
-          CompareHorizontalIterator{cell_cmp},
+          CompareHorizontalIterator{cell_comp},
           std::move(horz_it_list)},
         index_{index} {}
 
@@ -941,7 +1329,7 @@ class FunnelBase {
      *  `layer_func` will be called for each layer. Its return value will be
      *  stored as `cell_index` in the corresponding `HorizontalIterator`.
      */
-    template<typename LayerFunc>
+    template<class LayerFunc>
     static constexpr this_type build(
         container_type& container,
         LayerFunc layer_func) {
@@ -964,7 +1352,7 @@ class FunnelBase {
       return this_type{
           std::move(horz_it_list),
           index,
-          container.cell_cmp_};
+          container.cell_comp_};
     }
 
     /**
@@ -977,7 +1365,7 @@ class FunnelBase {
      *  If `policy` is `std::launch::async`, `layer_func` must support
      *  concurrent calls.
      */
-    template<typename LayerFunc>
+    template<class LayerFunc>
     static constexpr this_type build_async(
         container_type& container,
         std::launch policy,
@@ -1010,7 +1398,7 @@ class FunnelBase {
       return this_type{
           std::move(horz_it_list),
           index,
-          container.cell_cmp_};
+          container.cell_comp_};
     }
 
     static constexpr this_type begin(container_type& container) {
@@ -1041,125 +1429,158 @@ class FunnelBase {
           [](deque_type const& deque) { return deque.size(); });
     }
 
-    template<typename K>
+    template<class K>
     static constexpr size_type layer_lower_bound(
         deque_type const& deque,
         K const& key,
-        cell_compare const& cell_cmp) {
+        cell_compare const& cell_comp) {
       size_type const cell_index{
           std::distance(
             deque.begin(),
-            std::lower_bound(deque.begin(), deque.end(), key, cell_cmp))};
+            std::lower_bound(deque.begin(), deque.end(), key, cell_comp))};
       return cell_index < deque.size()
           ? layer_type::rightLiveIndex(deque, cell_index)
           : cell_index;
     }
 
-    template<typename K>
+    template<class K>
     static constexpr this_type lower_bound(
         container_type& container,
         K const& key) {
       return build(
           container,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_lower_bound(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_lower_bound(deque, key, cell_comp);
           });
     }
 
-    template<typename K>
+    template<class K>
     static constexpr this_type lower_bound_async(
         container_type& container,
         std::launch policy,
         K const& key) {
       return build_async(
           container, policy,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_lower_bound(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_lower_bound(deque, key, cell_comp);
           });
     }
 
-    template<typename K>
+    template<class K>
     static constexpr size_type layer_upper_bound(
         deque_type const& deque,
         K const& key,
-        cell_compare const& cell_cmp) {
+        cell_compare const& cell_comp) {
       size_type const cell_index{
           std::distance(
             deque.begin(),
-            std::upper_bound(deque.begin(), deque.end(), key, cell_cmp))};
+            std::upper_bound(deque.begin(), deque.end(), key, cell_comp))};
       return cell_index < deque.size()
           ? layer_type::rightLiveIndex(deque, cell_index)
           : cell_index;
     }
 
-    template<typename K>
+    template<class K>
     static constexpr this_type upper_bound(
         container_type& container,
         K const& key) {
       return build(
           container,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_upper_bound(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_upper_bound(deque, key, cell_comp);
           });
     }
 
-    template<typename K>
+    template<class K>
     static constexpr this_type upper_bound_async(
         container_type& container,
         std::launch policy,
         K const& key) {
       return build_async(
           container, policy,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_upper_bound(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_upper_bound(deque, key, cell_comp);
           });
     }
 
-    template<typename K>
+    template<class K>
+    static constexpr std::pair<this_type, this_type> equal_range(
+        container_type& container,
+        K const& key) {
+      return {lower_bound(container, key), upper_bound(container, key)};
+    }
+
+    template<class K>
+    static constexpr std::pair<this_type, this_type> equal_range_async(
+        container_type& container,
+        std::launch policy,
+        K const& key) {
+      std::future<this_type> lower{std::async(
+          policy,
+          [policy, &container, &key]() {
+            return lower_bound_async(container, policy, key);
+          })};
+      std::future<this_type> upper{std::async(
+          policy,
+          [policy, &container, &key]() {
+            return upper_bound_async(container, policy, key);
+          })};
+      return {lower.get(), upper.get()};
+    }
+
+    template<class K>
     static constexpr this_type layer_find(
         deque_type const& deque,
         K const& key,
-        cell_compare const& cell_cmp) {
+        cell_compare const& cell_comp) {
       size_type const cell_index{
           std::distance(
             deque.begin(),
-            std::lower_bound(deque.begin(), deque.end(), key, cell_cmp))};
+            std::lower_bound(deque.begin(), deque.end(), key, cell_comp))};
       if (cell_index >= deque.size()) {
         return deque.size();
       }
       size_type const live_cell_index{
           layer_type::rightLiveIndex(deque, cell_index)};
-      if (cell_cmp.compare(cell_cmp.ext_key(deque[live_cell_index].entry), key)
+      if (cell_comp.compare(cell_comp.ext_key(deque[live_cell_index].entry), key)
           == 0) {
         return live_cell_index;
       }
       return deque.size();
     }
 
-    template<typename K>
+    template<class K>
     static constexpr this_type find(
         container_type& container,
         K const& key) {
       return build(
           container,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_find(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_find(deque, key, cell_comp);
           });
     }
 
-    template<typename K>
+    template<class K>
     static constexpr size_type find_async(
         container_type& container,
         std::launch policy,
         K const& key) {
       return build_async(
           container, policy,
-          [&key, &cell_cmp = container.cell_cmp](deque_type const& deque) {
-            return layer_find(deque, key, cell_cmp);
+          [&key, &cell_comp = container.cell_comp](deque_type const& deque) {
+            return layer_find(deque, key, cell_comp);
           });
     }
 
-  };
+    HorizontalIterator const& top() const {
+      return queue_.top();
+    }
+
+    HorizontalIterator& top() {
+      return queue_.top();
+    }
+
+  }; // class Iterator
 
   template<bool constant>
   static constexpr Iterator<constant> begin(
@@ -1232,27 +1653,28 @@ class FunnelBase {
     return Iterator<constant>::find_async(container, policy, key);
   }
 
-  struct LayerInsertPosition {
+  /**
+   *  @brief
+   *  Pointer to a layer and one of its end.
+   */
+  struct LayerEnd {
     layer_iterator layer;
     bool front;
-    LayerInsertPosition(layer_iterator layer, bool front)
-      : layer{layer}, front{front} {}
+    LayerEnd(layer_iterator layer, bool front) : layer{layer}, front{front} {}
   };
 
   /**
    *  @brief
    *  Where to insert a new entry.
    *
-   *  This is the return type of `insertPosition()`.
+   *  This is the return type of `insertPositionLinearSearch()` and
+   *  `insertPositionBinarySearch()`.
    *
    *  The empty state means that a new layer needs to be created.
    *  Otherwise, the value contains the layer iterator and a flag whether an
    *  insertion should take place in the front or in the back of the layer.
    */
-  using InsertPosition = std::optional<LayerInsertPosition>;
-
-  template<typename K, bool use_binary_search>
-  constexpr InsertPosition insertPosition(K const& key);
+  using InsertPosition = std::optional<LayerEnd>;
 
   /**
    *  @brief
@@ -1264,14 +1686,14 @@ class FunnelBase {
    *  If `layer_list_type` supports fast random access, a binary search can be
    *  done instead. We do not do that here.
    */
-  template<typename K>
-  constexpr InsertPosition insertPosition(K const& key) {
+  template<class K>
+  constexpr InsertPosition insertPositionLinearSearch(K const& key) {
     layer_iterator layer = layers_.begin();
     for (; layer != layers_.end(); ++layer) {
-      if (!cell_cmp_(key, layer->deque.back())) {
+      if (!cell_comp_(key, layer->deque.back())) {
         return InsertPosition{std::in_place, layer, false};
       }
-      if (!cell_cmp_(layer->deque.front(), key)) {
+      if (!cell_comp_(layer->deque.front(), key)) {
         return InsertPosition{std::in_place, layer, true};
       }
     }
@@ -1280,20 +1702,24 @@ class FunnelBase {
 
   /**
    *  @brief
-   *  Same as `getInsertPosition()`, but use binary search.
+   *  Same as `insertPositionLinearSearch()`, but use binary search.
+   *
+   *  @remark
+   *  This should not be used when `layer_list_type` does not support fast
+   *  random access.
    */
-  template<typename K>
+  template<class K>
   constexpr InsertPosition insertPositionBinarySearch(K const& key) {
     size_type const num_layers = layers_.size();
     if (num_layers == 0) {
       return {};
     }
     assert((!layers_.back().deque.empty()));
-    if (!cell_cmp_(key, layers_.back().deque.back())) {
+    if (!cell_comp_(key, layers_.back().deque.back())) {
       layer_iterator layer{
           std::lower_bound(layers_.begin(), layers_.end(), key,
-            [&cell_cmp = cell_cmp_](layer_type const& layer, K const& k) {
-              return cell_cmp(k, layer.deque.back());
+            [&cell_comp = cell_comp_](layer_type const& layer, K const& k) {
+              return cell_comp(k, layer.deque.back());
             }
           )};
       if (layer == layers_.end()) {
@@ -1301,11 +1727,11 @@ class FunnelBase {
       }
       return InsertPosition{std::in_place, layer, false};
     }
-    if (!cell_cmp_(layers_.back().deque.front(), key)) {
+    if (!cell_comp_(layers_.back().deque.front(), key)) {
       layer_iterator layer{
           std::lower_bound(layers_.begin(), layers_.end(), key,
-            [&cell_cmp = cell_cmp_](layer_type const& layer, K const& k) {
-              return cell_cmp(layer.deque.front(), k);
+            [&cell_comp = cell_comp_](layer_type const& layer, K const& k) {
+              return cell_comp(layer.deque.front(), k);
             })};
       if (layer == layers_.end()) {
         return {};
@@ -1315,43 +1741,140 @@ class FunnelBase {
     return {};
   }
 
-  template<typename E>
-  constexpr void forceInsert(E&& entry) {
-    InsertPosition insert_position{insertPosition(cell_cmp_.ext_key(entry))};
-    if (insert_position.has_value()) {
-      auto& layer_insert_position = insert_position.value();
-      if (layer_insert_position.front) {
-        layer_insert_position.layer->deque.emplace_front(
-            std::forward<E>(entry));
-      } else {
-        layer_insert_position.layer->deque.emplace_back(
-            std::forward<E>(entry));
-      }
-    } else {
-      layers_.emplace_back(cell_alloc_).deque.emplace_back(
-          std::forward<E>(entry));
-    }
-    ++size_;
+  template<class K>
+  constexpr InsertPosition insertPosition(
+      K const& key,
+      bool binary_search = true) {
+    return binary_search ?
+        insertPositionBinarySearch(key) :
+        insertPositionLinearSearch(key);
   }
 
-  template<typename E>
-  constexpr void forceInsertBinarySearch(E&& entry) {
-    InsertPosition insert_position{
-        insertPositionBinarySearch(cell_cmp_.ext_key(entry))};
+  template<class... Args>
+  layer_iterator forceEmplaceAt(
+      InsertPosition const& insert_position,
+      Args&&... args) {
+    ++size_;
     if (insert_position.has_value()) {
       auto& layer_insert_position = insert_position.value();
       if (layer_insert_position.front) {
-        layer_insert_position.layer->deque.emplace_front(
-            std::forward<E>(entry));
+        layer_insert_position.layer->emplace_front(
+            std::forward<Args>(args)...);
       } else {
-        layer_insert_position.layer->deque.emplace_back(
-            std::forward<E>(entry));
+        layer_insert_position.layer->emplace_back(
+            std::forward<Args>(args)...);
       }
-    } else {
-      layers_.emplace_back(cell_alloc_).deque.emplace_back(
-          std::forward<E>(entry));
+      return insert_position.value().layer;
     }
-    ++size_;
+    layers_.emplace_back(cell_alloc_).emplace_back(
+        std::forward<Args>(args)...);
+    return std::prev(layers_.end());
+  }
+
+  template<class E>
+  layer_iterator forceInsert(
+      E&& entry, bool binary_search = true) {
+    InsertPosition insert_position{
+        insertPosition(cell_comp_.ext_key(entry), binary_search)};
+    return forceEmplaceAt(insert_position, std::forward<E>(entry));
+  }
+
+  template<class... Args>
+  layer_iterator forceEmplace(
+      Args&&... args, bool binary_search = true) {
+    Entry entry{std::forward<Args>(args)...};
+    return forceInsert(std::move(entry), binary_search);
+  }
+
+  template<class K, class... VArgs>
+  layer_iterator forceEmplacePair(
+      K&& k,
+      VArgs&&... v_args,
+      bool binary_search = true) {
+    Key key{std::forward<K>(k)};
+    InsertPosition insert_position{insertPosition(key, binary_search)};
+    return forceEmplaceAt(
+        insert_position,
+        std::move(key),
+        std::forward<VArgs>(v_args)...);
+  }
+
+  template<class... KArgs, class... VArgs>
+  layer_iterator forceEmplacePair(
+      std::piecewise_construct_t,
+      std::tuple<KArgs...> k_args,
+      std::tuple<VArgs...> v_args,
+      bool binary_search = true) {
+    Key key{std::make_from_tuple<Key>(k_args)};
+    InsertPosition insert_position{insertPosition(key, binary_search)};
+    return forceEmplaceAt(
+        insert_position,
+        std::piecewise_construct,
+        std::forward_as_tuple(std::move(key)),
+        v_args);
+  }
+
+  template<class... Args>
+  void multiEmplace(Args&&... args, bool binary_search = true) {
+    layer_iterator layer{
+        forceEmplace(std::forward<Args>(args)..., binary_search)};
+    tryMergeOnInsert(layer);
+  }
+
+  /**
+   *  @brief
+   *  Merges `layer0` with `layer1`, then erases `layer1` from `layers_`.
+   *  This function is supposed to be called by `merge_policy`.
+   *
+   *  `layer0` should point to a layer that is positioned before `layer1` in
+   *  `layers_`.
+   *
+   *  If `layer1` is `layers_.end()`, this function simply removes all the dead
+   *  cells in `layer0`.
+   *
+   *  Note: When `layer1` is not `layers_.end()`, calling
+   *  `layers_.erase(layer1)` should not invalidate `layer0` as the merger may
+   *  rely on this. This is the case when `LayerList` is `std::list`, or when
+   *  `LayerList` is `std::vector` and `layer0` is positioned before `layer1`
+   *  in `layers_`.
+   */
+  void mergeLayers(layer_iterator layer0, layer_iterator layer1) {
+    if (layer1 == layers_.end()) {
+      layer0->optimize();
+      return;
+    }
+    deque_type& deque0{layer0->deque};
+    deque_type& deque1{layer1->deque};
+    size_t index0{0};
+    size_t index1{0};
+    layer_type merged_layer{cell_alloc_};
+    while (true) {
+      if (index0 == deque0.size()) {
+        for (
+            ; index1 < deque1.size()
+            ; index1 = layer_type::nextLiveIndex(deque1, index1)) {
+          merged_layer.push_back(std::move(deque1[index1]));
+        }
+        break;
+      }
+      if (index1 == deque1.size()) {
+        for (
+            ; index0 < deque0.size()
+            ; index0 = layer_type::nextLiveIndex(deque0, index0)) {
+          merged_layer.push_back(std::move(deque0[index0]));
+        }
+        break;
+      }
+      if (cell_comp_(deque0[index0], deque1[index1])) {
+        merged_layer.push_back(std::move(deque0[index0]));
+        index0 = layer_type::nextLiveIndex(deque0, index0);
+      } else {
+        merged_layer.push_back(std::move(deque1[index1]));
+        index1 = layer_type::nextLiveIndex(deque1, index1);
+      }
+    }
+    layer0->swap(merged_layer);
+    layers_.erase(layer1);
   }
 
   // --- Private member variables --- //
@@ -1359,13 +1882,16 @@ class FunnelBase {
   // del_ent_(value_type&)
   delete_entry del_ent_;
 
-  // cell_cmp_ contains ext_key and key_cmp
-  cell_compare cell_cmp_;
+  // cell_comp_ contains ext_key and key_comp
+  cell_compare cell_comp_;
 
   // Allocators.
   allocator_type value_alloc_;
   layer_allocator_type layer_alloc_;
   cell_allocator_type cell_alloc_;
+
+  // Merge policy.
+  merger_type merger_;
 
   // List of layers.
   layer_list_type layers_;
@@ -1377,7 +1903,7 @@ class FunnelBase {
   size_type size_{0};
 };
 
-template<typename Entry>
+template<class Entry>
 struct DefaultDeleteEntry {
   using entry_type = Entry;
   constexpr void operator()(entry_type& entry) const {}
@@ -1385,7 +1911,7 @@ struct DefaultDeleteEntry {
 
 // `std::identity` in C++20 could be used here. (The member typedefs are not
 // used.)
-template<typename Key>
+template<class Key>
 struct ExtractKeyPassthrough {
   using key_type = Key;
   using value_type = Key const;
@@ -1394,7 +1920,7 @@ struct ExtractKeyPassthrough {
   }
 };
 
-template<typename Key, typename Value>
+template<class Key, class Value>
 struct ExtractKeyFromPair {
   using key_type = Key;
   using mapped_type = Value;
@@ -1405,62 +1931,61 @@ struct ExtractKeyFromPair {
 };
 
 template<
-    typename Key,
-    typename Compare = std::less<Key>,
-    typename Allocator = std::allocator<Key>,
-    typename DeleteEntry = DefaultDeleteEntry<Key>,
-    template<typename, typename> class DequeTemplate = std::deque,
-    template<typename, typename> class LayerListTemplate = std::vector>
+    class Key,
+    class Compare = std::less<Key>,
+    class Allocator = std::allocator<Key>,
+    class DeleteEntry = DefaultDeleteEntry<Key>,
+    template<class, class> class Deque = std::deque,
+    template<class, class> class LayerList = std::vector,
+    template<class> class Merger = SimpleRatioMergerCurried<1, 2>::type>
 class FunnelSet : public FunnelBase<
-    LayerListTemplate<
-      FunnelLayer<
-        DequeTemplate<
-          FunnelCell<Key>,
-          typename std::allocator_traits<Allocator>::
-            template rebind_alloc<FunnelCell<Key>>>>,
-      typename std::allocator_traits<Allocator>::
-        template rebind_alloc<FunnelLayer<
-          DequeTemplate<
-            FunnelCell<Key>,
-            typename std::allocator_traits<Allocator>::
-              template rebind_alloc<FunnelCell<Key>>>>>>,
-    DeleteEntry,
+    Key,
+    DefaultDeleteEntry<Key>,
     Key,
     ExtractKeyPassthrough<Key>,
-    Compare> {
+    Compare,
+    Allocator,
+    Deque,
+    LayerList,
+    Merger> {
  public:
-  using this_type = 
-      FunnelSet<Key, Compare, Allocator, DeleteEntry, LayerListTemplate>;
-  using super_type = FunnelBase<
-      LayerListTemplate<
-        FunnelLayer<
-          DequeTemplate<
-            FunnelCell<Key>,
-            typename std::allocator_traits<Allocator>::
-              template rebind_alloc<FunnelCell<Key>>>>,
-        typename std::allocator_traits<Allocator>::
-          template rebind_alloc<FunnelLayer<
-            DequeTemplate<
-              FunnelCell<Key>,
-              typename std::allocator_traits<Allocator>::
-                template rebind_alloc<FunnelCell<Key>>>>>>,
+  using this_type = FunnelSet<
+      Key,
+      Compare,
+      Allocator,
       DeleteEntry,
+      Deque,
+      LayerList,
+      Merger>;
+  using super_type = FunnelBase<
+      Key,
+      DefaultDeleteEntry<Key>,
       Key,
       ExtractKeyPassthrough<Key>,
-      Compare>;
+      Compare,
+      Allocator,
+      Deque,
+      LayerList,
+      Merger>;
 
   using key_type = typename super_type::key_type;
   using delete_entry = typename super_type::delete_entry;
   using extract_key = typename super_type::extract_key;
   using key_compare = typename super_type::key_compare;
   using allocator_type = typename super_type::allocator_type;
+  using merger_type = typename super_type::merger_type;
 
+  // Inherit the constructor from `FunnelBase`.
+  using super_type::super_type;
+
+/*
   constexpr FunnelSet(
       delete_entry const& del_ent = delete_entry(),
       extract_key const& ext_key = extract_key(),
-      key_compare const& key_cmp = key_compare(),
-      allocator_type const& alloc = allocator_type())
-    : super_type{del_ent, ext_key, key_cmp, alloc} {}
+      key_compare const& key_comp = key_compare(),
+      allocator_type const& alloc = allocator_type(),
+      merger_type const& merger = merger_type())
+    : super_type{del_ent, ext_key, key_comp, alloc, merger} {}*/
 
   friend class FunnelTest;
 };
