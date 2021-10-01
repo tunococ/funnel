@@ -1,9 +1,10 @@
-add_library(funnel INTERFACE)
+add_library(funnel OBJECT)
 
-set_property(TARGET funnel PROPERTY CXX_STANDARD_REQUIRED OFF)
-set_property(TARGET funnel PROPERTY CXX_STANDARD 20)
+target_include_directories(funnel PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/include"
+)
 
-target_include_directories(funnel INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include")
-
-target_sources(funnel INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/include/funnel_base.hpp")
+target_sources(funnel PUBLIC
+  "${CMAKE_CURRENT_SOURCE_DIR}/include/funnel/funnel_base.hpp"
+)
 
